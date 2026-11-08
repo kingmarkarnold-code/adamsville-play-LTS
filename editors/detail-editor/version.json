@@ -1,0 +1,129 @@
+{
+  "version": "1.4.0",
+  "changelog": "The cache + Apply workflow: opening a piece loads it once into a working copy, and nothing is sent back while you work \u2014 drags, point edits and renames all stay in the editor until you press Apply, which sends that piece's edits to GitHub in one verified round trip. Switching pieces, closing a tab, opening a piece another editor sent, or quitting with unapplied edits now asks Apply / Discard / Stay \u2014 nothing is saved silently (switching used to save on its own) and nothing is lost silently. A page with unapplied edits wears a bullet on its tab, and the window title says so. Buildings work exactly the same way.",
+  "files": [
+    {
+      "path": "VERSION",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/VERSION",
+      "sha256": "78b591400c56b7b67b8cb3b2b8a8e65e9093897f02ce0878e6b5405c68620fa7"
+    },
+    {
+      "path": "app.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/app.py",
+      "sha256": "e1f001e51a5d8dc97bbed13585dbfa07e34725fc324cb106ff057ea44b0de4b7"
+    },
+    {
+      "path": "detailcanvas.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/detailcanvas.py",
+      "sha256": "b5168eb8d85c97796e53c002e51a842574b03065be0823a5015d061078d6a0c6"
+    },
+    {
+      "path": "detaildata.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/detaildata.py",
+      "sha256": "9cad67801362258b8bf42a38e81f4e7f2963e4e9d0bee374f4e494e66d5031e0"
+    },
+    {
+      "path": "element.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/element.py",
+      "sha256": "43959006d10930be3e41217676f2be6e0ca6b79670f8bfd61e4bad11498c7aa4"
+    },
+    {
+      "path": "mollie-icon.png",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/mollie-icon.png",
+      "sha256": "28990027fd79e03e2ef8416e8c1d3410ee284ec86383280968b245f08576e768"
+    },
+    {
+      "path": "suite_core/__init__.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/suite_core/__init__.py",
+      "sha256": "2e6de5b3806e823ce6602a8975ae59d2b960e1ba9ed93a0e316950d2f78de155"
+    },
+    {
+      "path": "suite_core/about.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/suite_core/about.py",
+      "sha256": "5561c0b939d10b7695dd1f73237b180b254251ae5ba0fa3345d26da4c303a20d"
+    },
+    {
+      "path": "suite_core/github_sync.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/suite_core/github_sync.py",
+      "sha256": "30da62de6b36da189acbcbe004ac3208d2ca3206f1a9551acd2a650785eac861"
+    },
+    {
+      "path": "suite_core/layout.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/suite_core/layout.py",
+      "sha256": "359760a31f94575de55c03772fe2fe7f9d96805fa6b1d210bad5ef7f916a4c0b"
+    },
+    {
+      "path": "suite_core/reporting.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/suite_core/reporting.py",
+      "sha256": "4ea71c8f69ab9cf22d7da96a160c6587734b0e6939f5b8f33b1760c1faca5972"
+    },
+    {
+      "path": "suite_core/shared_cache.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/suite_core/shared_cache.py",
+      "sha256": "ce91dd4e9950db9ccc299d2104d96455a8bc1fe237bd0bbc205eaedfd8e7f454"
+    },
+    {
+      "path": "suite_core/updater.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/detail-editor/app/suite_core/updater.py",
+      "sha256": "f004bc7b51254c04014f0489db3447b6ddb67c94e89aefab77e84ed8e6e09cbc"
+    }
+  ],
+  "selfupdate": {
+    "payload_root": "editors/detail-editor/app",
+    "payload_sha256": "8f99b5c1c28897b5e34c0f8554ae47e1da127b4d8deaeba598c2f2dc3bb62a34",
+    "files": [
+      {
+        "path": "VERSION",
+        "sha256": "78b591400c56b7b67b8cb3b2b8a8e65e9093897f02ce0878e6b5405c68620fa7"
+      },
+      {
+        "path": "app.py",
+        "sha256": "e1f001e51a5d8dc97bbed13585dbfa07e34725fc324cb106ff057ea44b0de4b7"
+      },
+      {
+        "path": "detailcanvas.py",
+        "sha256": "b5168eb8d85c97796e53c002e51a842574b03065be0823a5015d061078d6a0c6"
+      },
+      {
+        "path": "detaildata.py",
+        "sha256": "9cad67801362258b8bf42a38e81f4e7f2963e4e9d0bee374f4e494e66d5031e0"
+      },
+      {
+        "path": "element.py",
+        "sha256": "43959006d10930be3e41217676f2be6e0ca6b79670f8bfd61e4bad11498c7aa4"
+      },
+      {
+        "path": "mollie-icon.png",
+        "sha256": "28990027fd79e03e2ef8416e8c1d3410ee284ec86383280968b245f08576e768"
+      },
+      {
+        "path": "suite_core/__init__.py",
+        "sha256": "2e6de5b3806e823ce6602a8975ae59d2b960e1ba9ed93a0e316950d2f78de155"
+      },
+      {
+        "path": "suite_core/about.py",
+        "sha256": "5561c0b939d10b7695dd1f73237b180b254251ae5ba0fa3345d26da4c303a20d"
+      },
+      {
+        "path": "suite_core/github_sync.py",
+        "sha256": "30da62de6b36da189acbcbe004ac3208d2ca3206f1a9551acd2a650785eac861"
+      },
+      {
+        "path": "suite_core/layout.py",
+        "sha256": "359760a31f94575de55c03772fe2fe7f9d96805fa6b1d210bad5ef7f916a4c0b"
+      },
+      {
+        "path": "suite_core/reporting.py",
+        "sha256": "4ea71c8f69ab9cf22d7da96a160c6587734b0e6939f5b8f33b1760c1faca5972"
+      },
+      {
+        "path": "suite_core/shared_cache.py",
+        "sha256": "ce91dd4e9950db9ccc299d2104d96455a8bc1fe237bd0bbc205eaedfd8e7f454"
+      },
+      {
+        "path": "suite_core/updater.py",
+        "sha256": "f004bc7b51254c04014f0489db3447b6ddb67c94e89aefab77e84ed8e6e09cbc"
+      }
+    ]
+  }
+}

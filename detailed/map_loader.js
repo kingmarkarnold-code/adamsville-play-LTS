@@ -1,0 +1,1496 @@
+/* ============================================================================
+   MAP LOADER — Phase C of the Adamsville map programme (Joshua's GO,
+   2026-10-28). Loads a Phase B data package (true metres, materials baked
+   into every record), converts it ONCE into the game's runtime frame via
+   map_registry.js (the single conversion point), and wires it into the
+   running game:
+
+     1. MATERIAL TRUTH — the converted geometry is registered with
+        collision_material.js as the package provider, so the ONE movement
+        gate (canMoveTo / getMaterialAt / surfaceYAt) answers from the
+        package's baked materials: building footprint RINGS (not circles),
+        road surfaces with real profiles, water bodies + streams, the rail
+        corridor, and bridge decks as LEVELS (passable surface over a
+        blocked under-space, level crossings at grade).
+     2. GROUND — the package terrain grid becomes the material system's
+        ground sampler while the package is active.
+     3. RENDER — bridge decks and the rail corridor are drawn (deck slabs
+        at deck height, track beds + rails along the authored centrelines).
+     4. RAIL HANDOFF — window.PACKAGE_RAIL carries the converted MARTA /
+        CSX centrelines; marta_system.js aligns its West Line path to the
+        authored MARTA corridor while the package is active.
+     5. GRAPH — the package roads' shared vertices are byte-exact (Phase B
+        welds), so the loader builds a true vertex graph and offers
+        directed spot-traces (the Phase B inheritance: routing honours
+        shared vertices — verified in the Phase C harness).
+
+   ACTIVATION (Phase D, 2026-10-28 — THE SWAP): the package is the
+   default world for Adamsville. index.html's zone seam calls
+   bootWorld() BEFORE the deferred queue reaches the world build: the
+   package loads, converts, and is re-expressed as the legacy-shaped
+   globals the whole game already consumes (ROAD_DATA / OSM_BUILDINGS /
+   WATER inputs / heightAt's terrain), so renderer, traffic, GPS and
+   every feature layer run on the redrawn map with no per-system
+   changes. This module's own late activation (provider + deck/rail
+   rendering + PACKAGE_RAIL) then runs on the SAME prebuilt package —
+   one load, one conversion.
+
+   PHASE F (2026-10-28, later the same day) — THE MAP IS REMOVED and the
+   legacy fallback is GONE with it (Joshua's restart order): the package
+   and every legacy zone were archived out of the game (branch
+   world-map-removed-2026-10-28 in adamsville-play-archive). The
+   registry is empty, so bootWorld() resolves false and the boot seam
+   answers with the critical NO MAP DATA panel — the honest empty
+   state, never a fabricated world. When a new map package is
+   registered again, this loader works exactly as before.
+
+   PHASE G (2026-10-30) — THE NEW MAP PACKAGE IS REGISTERED: the
+   rebuilt Adamsville terrain (D-grid format — see map_registry.js
+   makeDGridSampler) plus the fresh verified water layer, as a PARTIAL
+   package (zone.json carries "partial": true; every other record file
+   is an empty records list). bootWorld publishes window.__PKG_PARTIAL
+   and window.__PKG_TERRAIN_GRID before the core block runs; the
+   collision provider activates as usual (its water truth is real —
+   the lakes wade at their surveyed depth), and index.html disables
+   buildings / NPCs / vehicles / full-map systems on the flag.
+ *
+ * The WOODLAND ships with the terrain too (Joshua, 2026-10-30:
+ * "trees or wooded areas are a part of terrain"): when zone.json
+ * declares a "canopy" layer, loadPackage fetches it alongside (NLCD
+ * 2021 cover % per 10 m cell; open water already excluded in the
+ * data — zone-build/build-canopy.py; house clearings arrive at the
+ * buildings step, the inherited pads having been pulled from the
+ * terrain by Joshua's 2026-10-30 ruling) and bootWorld
+ * publishes it as window.__PKG_CANOPY; index.html's buildPkgCanopy
+ * draws it as canopy masses in partial mode. A canopy fetch failure
+ * never fails the boot — the world loads, the trees just don't.
+
+   This module is loadable under Node for the Phase C harness: every
+   browser touchpoint (fetch, THREE, scene, Report) is guarded, and the
+   data path (fetch -> convert -> build -> provider) runs headless.
+   ============================================================================ */
+(function(){
+'use strict';
+
+/* ============================ small geometry ============================ */
+function distToSeg(px, pz, x1, z1, x2, z2){
+  var vx = x2 - x1, vz = z2 - z1;
+  var len2 = vx * vx + vz * vz;
+  var t = len2 > 0 ? ((px - x1) * vx + (pz - z1) * vz) / len2 : 0;
+  t = t < 0 ? 0 : (t > 1 ? 1 : t);
+  var cx = x1 + vx * t, cz = z1 + vz * t;
+  var dx = px - cx, dz = pz - cz;
+  return { d: Math.sqrt(dx * dx + dz * dz), t: t, cx: cx, cz: cz };
+}
+function pointInRing(px, pz, ring){
+  /* Ray-casting point-in-polygon over a [[x,z],...] ring. */
+  var inside = false;
+  for (var i = 0, j = ring.length - 1; i < ring.length; j = i++){
+    var xi = ring[i][0], zi = ring[i][1], xj = ring[j][0], zj = ring[j][1];
+    if (((zi > pz) !== (zj > pz)) &&
+        (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+function ringEdgeDist(px, pz, ring){
+  var best = 1e18;
+  for (var i = 0; i < ring.length - 1; i++){
+    var r = distToSeg(px, pz, ring[i][0], ring[i][1], ring[i + 1][0], ring[i + 1][1]);
+    if (r.d < best) best = r.d;
+  }
+  return best;
+}
+/* A point guaranteed inside a (possibly concave) ring: scanline through
+   the ring's own centroid height, midpoint of the first inside interval.
+   Used for material-coverage sampling in the harness. */
+function ringInteriorPoint(ring){
+  var cx = 0, cz = 0, i;
+  for (i = 0; i < ring.length; i++){ cx += ring[i][0]; cz += ring[i][1]; }
+  cx /= ring.length; cz /= ring.length;
+  if (pointInRing(cx, cz, ring)) return [cx, cz];
+  var xs = [];
+  for (i = 0; i < ring.length - 1; i++){
+    var a = ring[i], b = ring[i + 1];
+    if ((a[1] > cz) !== (b[1] > cz))
+      xs.push(a[0] + (cz - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
+  }
+  xs.sort(function(p, q){ return p - q; });
+  if (xs.length >= 2) return [(xs[0] + xs[1]) / 2, cz];
+  return [ring[0][0], ring[0][1]];
+}
+
+/* ================= MINIMAP SCOPE (Joshua 2026-10-31) =================
+   The minimap shows ONLY the zone(s) that are OPEN — maps are cut per
+   zone, so the minimap's coverage follows the open set, never the old
+   whole-world extent. And an open zone does NOT pull its surroundings
+   onto the minimap by itself: neighbouring ground appears ONLY as a
+   reveal strip beyond a zone edge, and only while the player is close
+   to that edge (within REVEAL_M). Proximity to the border is what
+   brings the neighbouring area into view — nothing else.
+
+   compute(openRects, px, pz) is a PURE function (harness-testable):
+     openRects — [{x0,x1,z0,z1}, ...] in the runtime frame (package
+                 mode: the one open zone is pkg.boundsRuntime).
+     returns { current: [the open rect(s) the player stands in — or
+               the nearest open rect when outside all of them],
+               strips:  [reveal strips beyond current-rect edges the
+               player is within REVEAL_M of],
+               visible: current + strips }
+   index.html's drawMinimap clips its feature drawing to `visible`
+   and darkens the rest of the disc; poi_map.js tests its dots
+   against the same set (window.__mmScopeNow, published per draw).
+   Future zones slot in by adding their rect to openRects — the
+   reveal rule itself does not change. */
+var MM_SCOPE_REVEAL_M = 300;   /* border-proximity distance, metres */
+function mmScopeCompute(openRects, px, pz){
+  var out = { current: [], strips: [], visible: [] };
+  if (!openRects || !openRects.length) return out;
+  /* The player's zone(s): any open rect containing the point. If the
+     point is outside every open rect (should not happen in play —
+     movement is gated to open ground), fall back to the NEAREST rect
+     so the scope still anchors somewhere sane. */
+  var containing = openRects.filter(function(r){
+    return px >= r.x0 && px <= r.x1 && pz >= r.z0 && pz <= r.z1;
+  });
+  if (!containing.length){
+    var best = null, bestD = 1e18;
+    openRects.forEach(function(r){
+      var dx = Math.max(r.x0 - px, 0, px - r.x1);
+      var dz = Math.max(r.z0 - pz, 0, pz - r.z1);
+      var d = Math.sqrt(dx * dx + dz * dz);
+      if (d < bestD){ bestD = d; best = r; }
+    });
+    containing = [best];
+  }
+  out.current = containing;
+  containing.forEach(function(r){
+    /* distance from the player to each edge, measured INSIDE the rect */
+    var dW = px - r.x0, dE = r.x1 - px, dN = pz - r.z0, dS = r.z1 - pz;
+    if (dW < MM_SCOPE_REVEAL_M)
+      out.strips.push({ x0: r.x0 - MM_SCOPE_REVEAL_M, x1: r.x0, z0: r.z0, z1: r.z1, edge: 'W' });
+    if (dE < MM_SCOPE_REVEAL_M)
+      out.strips.push({ x0: r.x1, x1: r.x1 + MM_SCOPE_REVEAL_M, z0: r.z0, z1: r.z1, edge: 'E' });
+    if (dN < MM_SCOPE_REVEAL_M)
+      out.strips.push({ x0: r.x0, x1: r.x1, z0: r.z0 - MM_SCOPE_REVEAL_M, z1: r.z0, edge: 'N' });
+    if (dS < MM_SCOPE_REVEAL_M)
+      out.strips.push({ x0: r.x0, x1: r.x1, z0: r.z1, z1: r.z1 + MM_SCOPE_REVEAL_M, edge: 'S' });
+  });
+  out.visible = containing.concat(out.strips);
+  return out;
+}
+/* Point test against a computed scope (POI dots + the harness use
+   it). No scope at all returns true — legacy behaviour untouched. */
+function mmScopeTest(scope, x, z){
+  if (!scope || !scope.visible) return true;
+  for (var i = 0; i < scope.visible.length; i++){
+    var r = scope.visible[i];
+    if (x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) return true;
+  }
+  return false;
+}
+window.__MM_SCOPE = { REVEAL_M: MM_SCOPE_REVEAL_M, compute: mmScopeCompute, test: mmScopeTest };
+
+/* Spatial hash (40u cells, the game's standard) over segment records. */
+function segHash(cell){
+  var h = {};
+  function add(rec){
+    var minX = Math.min(rec.x1, rec.x2) - rec.hw, maxX = Math.max(rec.x1, rec.x2) + rec.hw;
+    var minZ = Math.min(rec.z1, rec.z2) - rec.hw, maxZ = Math.max(rec.z1, rec.z2) + rec.hw;
+    for (var gx = Math.floor(minX / cell); gx <= Math.floor(maxX / cell); gx++)
+      for (var gz = Math.floor(minZ / cell); gz <= Math.floor(maxZ / cell); gz++){
+        var k = gx + ',' + gz;
+        (h[k] = h[k] || []).push(rec);
+      }
+  }
+  function near(x, z){
+    var gx = Math.floor(x / cell), gz = Math.floor(z / cell), out = [], seen = {};
+    for (var ix = gx - 1; ix <= gx + 1; ix++)
+      for (var iz = gz - 1; iz <= gz + 1; iz++){
+        var c = h[ix + ',' + iz]; if (!c) continue;
+        for (var i = 0; i < c.length; i++)
+          if (!seen[c[i]._uid]){ seen[c[i]._uid] = 1; out.push(c[i]); }
+      }
+    return out;
+  }
+  return { add: add, near: near };
+}
+var _uidSeq = 1;
+
+/* ============================ fetch helpers ============================= */
+/* TRANSPORT NOTE (v1.17.2, 2026-11-01): these helpers fetch RELATIVE
+   urls ('maps/adamsville/zone.json', ...). On the web that is the
+   whole story. Inside the APK shell the document's origin is file:,
+   where Chromium refuses fetch() to file: urls — the SHELL FETCH
+   TRANSPORT shim in index.html's head rewrites these references to
+   the shell's reserved https origin and the shell serves the
+   gate-verified package bytes. Do not "fix" a shell load failure by
+   changing the urls here; the transport lives in index.html +
+   MainActivity, and this file stays transport-agnostic. */
+/* FETCH TIMEOUTS (2026-11-07, fresh-boot audit): these helpers used to
+   be bare fetch() — the ONLY loaders in the game with no cap at all.
+   A stalled-but-open connection (TCP up, no bytes: weak link, wedged
+   CDN edge) left the promise pending FOREVER: bootWorld() never
+   settled, the seam's callback never fired, and a fresh boot (an
+   incognito window above all — every byte must cross the network,
+   nothing is cached) sat on a frozen bar until the 180 s failsafe,
+   which cannot force-complete these critical steps. Now the fetch
+   follows the codebase's own discipline (mapdelivery's download
+   watchdog; index.html's __fetchTextWithProgress): an INACTIVITY
+   watchdog of 20 s — a download dies only after 20 s with NO bytes
+   arriving, so a slow-but-alive download always finishes — plus ONE
+   retry on a fresh connection. A failure after the retry rejects,
+   and bootWorld's catch turns it into the honest NO MAP DATA state
+   instead of an eternal bar. */
+var FETCH_IDLE_MS=20000;   /* silence longer than this = a dead download */
+var FETCH_TOTAL_MS=600000; /* absolute cap for the non-streaming fallback
+                              path only (index.html's __loadCapMs ceiling) */
+function fetchBytesOnce(url){
+  return new Promise(function(resolve, reject){
+    var settled=false, timer=null, ctl=null;
+    try{ if (typeof AbortController!=='undefined') ctl=new AbortController(); }catch(e){}
+    function fail(err){
+      if (settled) return; settled=true;
+      if (timer){ clearTimeout(timer); timer=null; }
+      reject(err);
+    }
+    function done(buf){
+      if (settled) return; settled=true;
+      if (timer){ clearTimeout(timer); timer=null; }
+      resolve(buf);
+    }
+    function arm(ms){
+      if (timer) clearTimeout(timer);
+      timer=setTimeout(function(){
+        try{ if (ctl) ctl.abort(); }catch(e){}
+        fail(new Error('download stalled - no data for '+Math.round(ms/1000)+'s: '+url));
+      }, ms);
+    }
+    arm(FETCH_IDLE_MS);
+    var opts={ cache:'no-store' };
+    if (ctl) opts.signal=ctl.signal;
+    fetch(url, opts).then(function(r){
+      if (!r.ok){ fail(new Error('HTTP '+r.status+' for '+url)); return; }
+      if (r.body && typeof r.body.getReader==='function'){
+        var reader=r.body.getReader();
+        var chunks=[], total=0;
+        (function step(){
+          reader.read().then(function(res){
+            if (settled) return;
+            if (res.done){
+              var out=new Uint8Array(total), off=0, i;
+              for (i=0;i<chunks.length;i++){ out.set(chunks[i], off); off+=chunks[i].length; }
+              done(out.buffer);
+              return;
+            }
+            if (res.value && res.value.length){
+              chunks.push(res.value); total+=res.value.length;
+              arm(FETCH_IDLE_MS);   /* bytes arrived — the watchdog resets */
+            }
+            step();
+          }, fail);
+        })();
+        return;
+      }
+      /* No streaming reads in this engine: whole-body read under the
+         long absolute cap instead of the idle watchdog (there are no
+         progress events to re-arm it with). */
+      arm(FETCH_TOTAL_MS);
+      if (typeof r.arrayBuffer==='function'){
+        r.arrayBuffer().then(done, fail);
+      } else if (typeof r.text==='function' && typeof TextEncoder!=='undefined'){
+        r.text().then(function(t){ done(new TextEncoder().encode(t).buffer); }, fail);
+      } else {
+        fail(new Error('unreadable response for '+url));
+      }
+    }, fail);
+  });
+}
+/* fetchBytes(url) — one attempt + ONE retry on a fresh connection
+   (the deferred script loader's rule). The second failure propagates:
+   bootWorld's catch owns what happens next. */
+function fetchBytes(url){
+  return fetchBytesOnce(url).catch(function(err){
+    note('fetch failed ('+((err && err.message) || err)+') — retrying once: '+url);
+    return fetchBytesOnce(url);
+  });
+}
+function fetchJSON(url){
+  return fetchBytes(url).then(function(buf){
+    var text;
+    if (typeof TextDecoder!=='undefined') text=new TextDecoder('utf-8').decode(buf);
+    else { /* ancient-engine fallback: a latin-1 read still parses the
+              ASCII structure of the package JSON honestly */
+      var bytes=new Uint8Array(buf), s='';
+      for (var i=0;i<bytes.length;i++) s+=String.fromCharCode(bytes[i]);
+      text=s;
+    }
+    return JSON.parse(text);
+  });
+}
+function fetchBin(url){
+  return fetchBytes(url);
+}
+/* fetchBinParts(base, desc) — chunked big-file fetch. desc =
+   { parts: [fileName, ...], bytes: totalBytes, sha256: hex }, as
+   declared in zone.json terrain.files.nearParts. Fetches EVERY part
+   (any single failure rejects the whole job — never assemble a
+   partial buffer), concatenates the parts in order into one
+   ArrayBuffer, and verifies the assembled length — plus the sha256
+   wherever WebCrypto is available — against the descriptor. A
+   mismatch rejects, so the boot fails honestly (the NO MAP DATA
+   state) instead of sampling a truncated or corrupted height field.
+   The returned buffer is byte-identical to the single file it
+   replaces, so downstream consumers (the D-grid sampler) never see
+   the seam. Exists because the GitHub blob API rejects the 44 MB
+   heights_near_2m.bin monolith ("input too large"); the parts are
+   each <= 8 MB. */
+function fetchBinParts(base, desc){
+  var names = (desc && desc.parts) || [];
+  if (!names.length)
+    return Promise.reject(new Error('nearParts: empty parts list'));
+  return Promise.all(names.map(function(n){ return fetchBin(base + n); }))
+    .then(function(bufs){
+      var total = 0, i;
+      for (i = 0; i < bufs.length; i++) total += bufs[i].byteLength;
+      if (desc.bytes && total !== desc.bytes)
+        throw new Error('nearParts: assembled ' + total +
+                        ' bytes, descriptor says ' + desc.bytes);
+      var out = new Uint8Array(total), off = 0;
+      for (i = 0; i < bufs.length; i++){
+        out.set(new Uint8Array(bufs[i]), off);
+        off += bufs[i].byteLength;
+      }
+      var buf = out.buffer;
+      if (desc.sha256 && typeof crypto !== 'undefined' &&
+          crypto.subtle && crypto.subtle.digest){
+        return crypto.subtle.digest('SHA-256', buf).then(function(d){
+          var dv = new Uint8Array(d), hex = '', j;
+          for (j = 0; j < dv.length; j++)
+            hex += ('0' + dv[j].toString(16)).slice(-2);
+          if (hex !== String(desc.sha256).toLowerCase())
+            throw new Error('nearParts: assembled sha256 mismatch');
+          return buf;
+        });
+      }
+      return buf;
+    });
+}
+function note(msg, extra){
+  try { console.log('[map-loader] ' + msg); } catch(e){}
+  try {
+    if (typeof Report !== 'undefined' && Report.setSys)
+      Report.setSys('mapsystem', { note: msg, extra: extra || null });
+  } catch(e){}
+}
+
+/* ============================ package build ============================= */
+/* buildPackage(raw, meta) — raw = {zone, roads, buildings, water, rail,
+   structures, places, pins, signs, terrain: Float32Array}. Converts every
+   coordinate through MapFrame.pkgToRuntime (THE conversion) and every
+   elevation through MapFrame.elevToRuntimeY. Pure data in, pure data out —
+   this is the function the Phase C harness exercises headless. */
+function buildPackage(raw){
+  var F = window.MapFrame;
+  function P(pt){ var r = F.pkgToRuntime(pt[0], pt[1]); return [r.x, r.z]; }
+  function ring(pts){ return pts.map(P); }
+  function Y(m){ return F.elevToRuntimeY(m); }
+
+  var pkg = { id: raw.zone.id, name: raw.zone.name, zone: raw.zone,
+              spawn: F.pkgToRuntime(0, 0) };
+
+  /* The terrain sampler is built FIRST (before the roads below) so a
+     road whose authored profile stops short of its last points can be
+     completed from the ground itself — see the profile repair in the
+     roads conversion. Phase G: a package whose terrain.format is
+     'dgrid' carries the two-level D-grid (base 10 m + sparse near 2 m)
+     and gets the D-grid sampler — same sampleElevM interface, no
+     flattening of the ruled 2 m fineness. */
+  var terrainSampler = raw.dgrid
+    ? F.makeDGridSampler(raw.zone, raw.dgrid)
+    : F.makePkgTerrainSampler(raw.zone, raw.terrain);
+  /* Phase G: a PARTIAL package (terrain + water only; every other
+     record file empty) — index.html gates buildings/NPCs/vehicles and
+     every full-map system on this flag. */
+  pkg.partial = !!raw.zone.partial;
+
+  /* --- roads: pts + per-point profile -> runtime pts + ys; arc lengths --- */
+  pkg.roads = raw.roads.records.map(function(r){
+    var pts = ring(r.pts);
+    var ys = (r.profile || []).map(Y);
+    /* PROFILE REPAIR (Phase D): 4 of 8,579 Phase B records carry a
+       profile 1-3 entries shorter than their point list (the profile
+       stops before the tail points). A short ys would drop the record
+       off the renderer's baked path and onto legacy re-derivation.
+       The missing tail heights are sampled from the package terrain —
+       the same ground the profile itself follows — except on deck
+       records, where the last authored height extends instead (a deck
+       tail must never be pulled to the ground). Over-long profiles
+       truncate. Authored values are never altered. */
+    if (ys.length !== pts.length){
+      if (ys.length > pts.length) ys.length = pts.length;
+      var onDeck = (r.deck_structs || []).length > 0;
+      while (ys.length < pts.length){
+        var ti = ys.length;
+        if (onDeck || !terrainSampler) ys.push(ys[ys.length - 1] || 0);
+        else {
+          var e = terrainSampler.sampleElevM(r.pts[ti][0], r.pts[ti][1]);
+          ys.push(e === null ? (ys[ys.length - 1] || 0) : Y(e));
+        }
+      }
+    }
+    var cum = [0];
+    for (var i = 1; i < pts.length; i++){
+      var dx = pts[i][0] - pts[i - 1][0], dz = pts[i][1] - pts[i - 1][1];
+      cum.push(cum[i - 1] + Math.sqrt(dx * dx + dz * dz));
+    }
+    return { id: r.id, name: r.name, cls: r.class, pts: pts, ys: ys, cum: cum,
+             len: cum[cum.length - 1], lanes: r.lanes, width_m: r.width_m,
+             ramp: !!r.ramp, deckStructs: r.deck_structs || [],
+             material: r.material };
+  });
+
+  /* --- buildings: real footprint rings (collision truth), centroid, height --- */
+  pkg.buildings = raw.buildings.records.map(function(b){
+    var rg = ring(b.ring);
+    var c = b.centroid ? P(b.centroid) : ringInteriorPoint(rg);
+    var rr = 0;
+    for (var i = 0; i < rg.length; i++){
+      var dx = rg[i][0] - c[0], dz = rg[i][1] - c[1];
+      var d = Math.sqrt(dx * dx + dz * dz); if (d > rr) rr = d;
+    }
+    return { id: b.id, name: b.name, use: b.use, ring: rg, centroid: c,
+             r: rr, height_m: b.height_m, groundY: Y(b.ground_elev_m || 0),
+             material: b.material };
+  });
+
+  /* --- water: bodies (rings) + streams (centrelines) --- */
+  pkg.waterBodies = []; pkg.waterStreams = [];
+  raw.water.records.forEach(function(w){
+    if (w.kind === 'body')
+      pkg.waterBodies.push({ id: w.id, name: w.name, ring: ring(w.ring),
+                             surfaceY: (typeof w.surface_m === 'number') ? Y(w.surface_m) : null,
+                             material: w.material });
+    else
+      pkg.waterStreams.push({ id: w.id, name: w.name, pts: ring(w.pts),
+                              /* Phase G: a stream may carry its surveyed
+                                 per-point water surface (profile, metres
+                                 ASL — the Chattahoochee stem rides 0.5 m
+                                 over its thalweg) and a true width; the
+                                 legacy default (terrain-hugging ribbon,
+                                 3 m half width) stands when absent. */
+                              ys: (w.profile || []).map(Y),
+                              halfW: (typeof w.width_m === 'number')
+                                ? w.width_m / 2
+                                : ((w.widths_m && w.widths_m.length)
+                                    ? Math.max.apply(null, w.widths_m) / 2 : 3.0),
+                              /* 2026-11-01 fix batch v2: per-station
+                                 widths (widths_m, pkg metres) for
+                                 streams whose width varies along the
+                                 course (the merged Tatum creek runs
+                                 4-20 m), and surf_rings — the baked
+                                 single-surface outline the game draws
+                                 (see build_merged_water.py; a simple
+                                 polygon per ring, so the translucent
+                                 sheet can never double-draw). Ring
+                                 profile is ASL metres, converted like
+                                 the spine profile. */
+                              widths: (w.widths_m && w.widths_m.length)
+                                ? w.widths_m.slice() : null,
+                              surfRings: (w.surf_rings && w.surf_rings.length)
+                                ? w.surf_rings.map(function(r){
+                                    return { pts: ring(r.pts),
+                                             ys: (r.profile || []).map(Y),
+                                             across: r.across || [],
+                                             arc: r.arc || [],
+                                             foam: r.foam || [] };
+                                  }) : null,
+                              material: w.material });
+  });
+
+  /* --- rail: centrelines with profiles; layer: -1 under, 0 grade, 1 over --- */
+  pkg.rail = raw.rail.records.map(function(r){
+    return { id: r.id, name: r.name, operator: r.operator, kind: r.kind,
+             tracks: r.tracks || 1, layer: r.layer || 0, pts: ring(r.pts),
+             ys: (r.profile || []).map(Y), structures: r.structures || [],
+             material: r.material };
+  });
+
+  /* --- structures: level structures (deck/bridge/viaduct) carry a span
+     polygon + deck/under elevations; level crossings are at-grade polys;
+     airport pavement kinds are ground surfaces (converted, no level). --- */
+  pkg.decks = []; pkg.levelCrossings = []; pkg.groundStructures = [];
+  pkg.boulders = [];   /* 2026-11-07: boulder records (kind 'boulder') */
+  raw.structures.records.forEach(function(s){
+    if (s.kind === 'level_crossing'){
+      pkg.levelCrossings.push({ id: s.id, name: s.name, poly: ring(s.span_poly),
+                                material: s.material });
+    } else if (s.kind === 'deck' || s.kind === 'bridge' || s.kind === 'viaduct'){
+      pkg.decks.push({ id: s.id, kind: s.kind, name: s.name, over: s.over,
+                       under: s.under, poly: ring(s.span_poly),
+                       deckY: Y(s.deck_elev_m), underY: Y(s.under_elev_m),
+                       surfaceMat: s.surface_material, underMat: s.under_material,
+                       material: s.material });
+    } else if (s.kind === 'boulder'){
+      /* 2026-11-07 falls/boulders batch: a boulder is a POINT
+         structure — the falls lip rows, the falls flanks/plunge
+         scatter, and the Chattahoochee shoal boulders. It carries
+         its own drawn profile (r_m / sy / rot + the two harmonic
+         pairs buildPkgBoulders draws AND the mesh solver reads —
+         one profile, two readers) and its seating: base_m is the
+         ASL ground at the anchor from the zone build, converted
+         here to the runtime base Y. Without this branch the
+         record would fall through the dispatch below and vanish
+         (it has neither span_poly nor pts). */
+      pkg.boulders.push({ id: s.id, kind: 'boulder', name: s.name || 'boulder',
+                          at: P(s.at), r_m: s.r_m, sy: s.sy, rot: s.rot,
+                          a1: s.a1, p1: s.p1, a2: s.a2, p2: s.p2,
+                          variant: s.variant, baseY: Y(s.base_m),
+                          lift: s.lift, zone: s.zone, patch: s.patch || null,
+                          material: s.material });
+    } else if (s.span_poly){
+      pkg.groundStructures.push({ id: s.id, kind: s.kind, name: s.name,
+                                  poly: ring(s.span_poly), material: s.material });
+    } else if (s.pts){
+      /* Centreline pavement (the FTY runway, taxilanes): carries its
+         authored width + elevation profile so the renderer can draw
+         the strip at its real width on its real grade (Phase D). */
+      pkg.groundStructures.push({ id: s.id, kind: s.kind, name: s.name,
+                                  pts: ring(s.pts),
+                                  width_m: (typeof s.width_m === 'number') ? s.width_m : null,
+                                  ys: (s.profile || []).map(Y),
+                                  material: s.material });
+    }
+  });
+
+  /* --- places / pins / signs: converted points (+ rings where authored) --- */
+  function convPointRec(r){
+    var o = { id: r.id, kind: r.kind, name: r.name, material: r.material };
+    if (r.at) o.at = P(r.at);
+    if (r.ring) o.ring = ring(r.ring);
+    return o;
+  }
+  pkg.places = raw.places.records.map(convPointRec);
+  pkg.pins = raw.pins.records.map(convPointRec);
+  pkg.signs = raw.signs.records.map(convPointRec);
+
+  /* --- runtime-frame extent of the package. The minimap / full map
+     scope themselves to this in package mode (Joshua 2026-10-28:
+     the map must not zoom out past the active map or pan into the
+     old world's empty space). bounds_m corners through THE
+     conversion — the frame map is affine, so the corner bbox is
+     exact. Fallback: the roads' own bbox, if a package ever ships
+     without bounds_m. --- */
+  pkg.boundsRuntime = (function(){
+    var pts = [];
+    var bm = raw.zone && raw.zone.bounds_m;
+    if (bm && isFinite(bm.xMin) && isFinite(bm.xMax) &&
+        isFinite(bm.zMin) && isFinite(bm.zMax)){
+      pts = [F.pkgToRuntime(bm.xMin, bm.zMin), F.pkgToRuntime(bm.xMin, bm.zMax),
+             F.pkgToRuntime(bm.xMax, bm.zMin), F.pkgToRuntime(bm.xMax, bm.zMax)];
+    } else {
+      pkg.roads.forEach(function(r){ pts = pts.concat(r.pts); });
+    }
+    if (!pts.length) return null;
+    var x0 = 1e18, x1 = -1e18, z0 = 1e18, z1 = -1e18;
+    pts.forEach(function(p){
+      var px = (p.x !== undefined) ? p.x : p[0];
+      var pz = (p.z !== undefined) ? p.z : p[1];
+      if (px < x0) x0 = px; if (px > x1) x1 = px;
+      if (pz < z0) z0 = pz; if (pz > z1) z1 = pz;
+    });
+    return { x0: x0, x1: x1, z0: z0, z1: z1 };
+  })();
+
+  /* MINIMAP SCOPE (Joshua 2026-10-31): this package is the one OPEN
+     zone, so its bounds are the minimap's home extent. drawMinimap
+     asks here (via __MM_SCOPE.compute over [boundsRuntime]) what may
+     be drawn; neighbouring ground joins only as a border-proximity
+     reveal strip. See the MINIMAP SCOPE block at the top of this
+     file. */
+  pkg.minimapScope = function(px, pz){
+    return pkg.boundsRuntime ? mmScopeCompute([pkg.boundsRuntime], px, pz) : null;
+  };
+
+  /* --- terrain (sampler built at the top of this function) --- */
+  pkg.terrain = terrainSampler;
+
+  /* --- welded vertex graph over PACKAGE coords (welds are byte-exact in
+     the package data, so exact keys are the truth; conversion happens only
+     for display of the endpoints). Adjacency: vertexKey -> [{to, road}] --- */
+  var graph = {};
+  function vkey(pt){ return pt[0].toFixed(2) + ',' + pt[1].toFixed(2); }
+  raw.roads.records.forEach(function(r){
+    for (var i = 1; i < r.pts.length; i++){
+      var a = vkey(r.pts[i - 1]), b = vkey(r.pts[i]);
+      (graph[a] = graph[a] || []).push({ to: b, road: r.id, cls: r.class });
+      (graph[b] = graph[b] || []).push({ to: a, road: r.id, cls: r.class });
+    }
+  });
+  pkg.graph = graph;
+  pkg.vkey = vkey;
+  /* trace(fromPkgPt, toPkgPt, classSet) — BFS over shared vertices.
+     Returns {found, hops, roads:[ids]} — the routing-honours-vertices
+     spot check (Phase B inheritance #6). */
+  pkg.trace = function(fromPt, toPt, classSet){
+    var start = vkey(fromPt), goal = vkey(toPt);
+    if (start === goal) return { found: true, hops: 0, roads: [] };
+    var prev = {}, q = [start]; prev[start] = null;
+    while (q.length){
+      var cur = q.shift();
+      var edges = graph[cur] || [];
+      for (var i = 0; i < edges.length; i++){
+        var e = edges[i];
+        if (classSet && !classSet[e.cls]) continue;
+        if (prev[e.to] !== undefined) continue;
+        prev[e.to] = { from: cur, road: e.road };
+        if (e.to === goal){
+          var roads = [], n = goal;
+          while (prev[n]){ roads.unshift(prev[n].road); n = prev[n].from; }
+          return { found: true, hops: roads.length, roads: roads };
+        }
+        q.push(e.to);
+      }
+    }
+    return { found: false, hops: -1, roads: [] };
+  };
+
+  /* --- collision provider structures (runtime frame) --- */
+  var prov = buildProvider(pkg);
+  pkg.provider = prov;
+  return pkg;
+}
+
+/* ==================== collision provider (runtime) ====================== */
+/* The provider owns ALL package-geometry material queries. collision_
+   material.js consults it (when a package is active) before its legacy
+   probes. Materials come from the records' baked classes — no per-object
+   registration exists to forget (Joshua's doctrine). */
+function buildProvider(pkg){
+  var MAT = (typeof COLLISION_MATERIALS !== 'undefined')
+    ? COLLISION_MATERIALS
+    : { NONE: 0, SOLID: 1, ROAD: 2, WATER: 3, DOOR: 4, GRASS: 5, PERSON: 6 };
+  function matByName(n){
+    if (n === 'ROAD') return MAT.ROAD;
+    if (n === 'WATER') return MAT.WATER;
+    if (n === 'SOLID') return MAT.SOLID;
+    if (n === 'GRASS') return MAT.GRASS;
+    return MAT.SOLID;   /* RAIL and anything structural block ground movers */
+  }
+
+  /* segment hashes */
+  var roadHash = segHash(40), railHash = segHash(40);
+  pkg.roads.forEach(function(r){
+    var hw = Math.max(1.5, (r.width_m || 7.3) / 2);
+    for (var i = 1; i < r.pts.length; i++){
+      roadHash.add({ _uid: _uidSeq++, x1: r.pts[i - 1][0], z1: r.pts[i - 1][1],
+                     x2: r.pts[i][0], z2: r.pts[i][1], hw: hw,
+                     y1: r.ys[i - 1], y2: r.ys[i], road: r });
+    }
+  });
+  pkg.rail.forEach(function(r){
+    var hw = (r.tracks || 1) * 1.6 + 1.6;   /* corridor half width */
+    for (var i = 1; i < r.pts.length; i++){
+      railHash.add({ _uid: _uidSeq++, x1: r.pts[i - 1][0], z1: r.pts[i - 1][1],
+                     x2: r.pts[i][0], z2: r.pts[i][1], hw: hw, layer: r.layer,
+                     y1: r.ys[i - 1], y2: r.ys[i], rail: r });
+    }
+  });
+  /* building rings hashed by centroid cell; the scan span derives from
+     the largest ring in the package, so even a mall- or campus-scale
+     footprint is found from any point inside it */
+  var bldgHash = {}, maxBldgR = 0;
+  pkg.buildings.forEach(function(b){
+    if (b.r > maxBldgR) maxBldgR = b.r;
+    var k = Math.floor(b.centroid[0] / 40) + ',' + Math.floor(b.centroid[1] / 40);
+    (bldgHash[k] = bldgHash[k] || []).push(b);
+  });
+  var bldgSpan = Math.max(1, Math.ceil((maxBldgR + 5) / 40));
+  function buildingsNear(x, z){
+    var gx = Math.floor(x / 40), gz = Math.floor(z / 40), out = [];
+    for (var ix = gx - bldgSpan; ix <= gx + bldgSpan; ix++)
+      for (var iz = gz - bldgSpan; iz <= gz + bldgSpan; iz++){
+        var c = bldgHash[ix + ',' + iz]; if (!c) continue;
+        for (var i = 0; i < c.length; i++){
+          var b = c[i];
+          var dx = x - b.centroid[0], dz = z - b.centroid[1];
+          if (dx * dx + dz * dz < (b.r + 5) * (b.r + 5)) out.push(b);
+        }
+      }
+    return out;
+  }
+
+  function onRoad(x, z){
+    var segs = roadHash.near(x, z);
+    for (var i = 0; i < segs.length; i++){
+      var s = segs[i];
+      if (distToSeg(x, z, s.x1, s.z1, s.x2, s.z2).d <= s.hw) return s;
+    }
+    return null;
+  }
+  function inWater(x, z){
+    var i, s;
+    for (i = 0; i < pkg.waterBodies.length; i++)
+      if (pointInRing(x, z, pkg.waterBodies[i].ring)) return true;
+    for (i = 0; i < pkg.waterStreams.length; i++){
+      var w = pkg.waterStreams[i];
+      /* FALLS-QA FIX (2026-11-07): a stream carrying its baked
+         surface rings answers by those rings — the DRAWN water, in
+         this function's own runtime frame. The spine fallback below
+         compares halfW, a PACKAGE-METRE number (max widths_m / 2 =
+         10 for the merged creek), against runtime-frame distances,
+         which stretched the creek's material ~3x too wide and called
+         the dry bank south of Tatum Lake WATER. Ring-less streams
+         keep the legacy spine test unchanged. */
+      if (w.surfRings && w.surfRings.length){
+        for (var r = 0; r < w.surfRings.length; r++)
+          if (pointInRing(x, z, w.surfRings[r].pts)) return true;
+        continue;
+      }
+      for (var j = 1; j < w.pts.length; j++){
+        s = distToSeg(x, z, w.pts[j - 1][0], w.pts[j - 1][1], w.pts[j][0], w.pts[j][1]);
+        if (s.d <= w.halfW) return true;
+      }
+    }
+    return false;
+  }
+  function inBuilding(x, z){
+    var bs = buildingsNear(x, z);
+    for (var i = 0; i < bs.length; i++)
+      if (pointInRing(x, z, bs[i].ring)) return bs[i];
+    return null;
+  }
+  function railHit(x, z){
+    var segs = railHash.near(x, z);
+    for (var i = 0; i < segs.length; i++){
+      var s = segs[i];
+      if (distToSeg(x, z, s.x1, s.z1, s.x2, s.z2).d <= s.hw) return s;
+    }
+    return null;
+  }
+  function inCrossing(x, z){
+    for (var i = 0; i < pkg.levelCrossings.length; i++)
+      if (pointInRing(x, z, pkg.levelCrossings[i].poly)) return pkg.levelCrossings[i];
+    return null;
+  }
+  function deckAt(x, z){
+    for (var i = 0; i < pkg.decks.length; i++)
+      if (pointInRing(x, z, pkg.decks[i].poly)) return pkg.decks[i];
+    return null;
+  }
+
+  /* Ground-level material from package data, or null when the package
+     has nothing to say (caller falls through to legacy probes — props,
+     doors, people are not package data). LEVEL-BLIND by design: decks
+     and elevated rail are level structures and only materialAtLevel
+     may speak for them — an elevated line must never poison the ground
+     beneath it (a road under the MARTA viaduct is a road; a creek
+     under a bridge is water). Ground truth, in order:
+       road surface > building ring > water > at-grade rail corridor.
+     Roads outrank buildings: service roads and drive-through canopies
+     overlap footprints in the source data, and the travelled surface
+     is the truth a mover meets; off-road ring interiors stay SOLID. */
+  function materialAt(x, z){
+    if (onRoad(x, z)) return MAT.ROAD;
+    if (inBuilding(x, z)) return MAT.SOLID;
+    if (inWater(x, z)) return MAT.WATER;
+    var rh = railHit(x, z);
+    if (rh && !inCrossing(x, z) && (rh.layer | 0) === 0) return MAT.SOLID;
+    return null;
+  }
+  /* railYAt(x, z): runtime Y of the nearest rail profile near (x, z). */
+  function railYAt(x, z){
+    var segs = railHash.near(x, z), best = null, bd = 1e18, bt = 0;
+    for (var ci = 0; ci < segs.length; ci++){
+      var e = segs[ci], r = distToSeg(x, z, e.x1, e.z1, e.x2, e.z2);
+      if (r.d < bd){ bd = r.d; best = e; bt = r.t; }
+    }
+    if (!best || bd > best.hw + 2) return null;
+    return best.y1 + (best.y2 - best.y1) * bt;
+  }
+  /* deckForLevel(x, z, levelY): the deck a mover at levelY stands on —
+     among the spans containing the point, the one whose deck height is
+     closest to the mover's level, and only when it is within the deck
+     band. Stacked crossings (the MLK / I-285 decks) sit ~1 runtime
+     unit apart in places, so a first-match or a wide band would claim
+     the wrong surface: a road passing just under a rail viaduct reads
+     that viaduct's surface. Deck road profiles equal deck_elev by
+     construction (Phase B), so the band can stay tight. */
+  var DECK_BAND = 0.75;
+  function deckForLevel(x, z, levelY){
+    if (typeof levelY !== 'number' || !isFinite(levelY)) return null;
+    var best = null, bd = 1e18;
+    for (var i = 0; i < pkg.decks.length; i++){
+      var d = pkg.decks[i];
+      if (!pointInRing(x, z, d.poly)) continue;
+      var dd = Math.abs(levelY - d.deckY);
+      if (dd < bd){ bd = dd; best = d; }
+    }
+    return (best && bd <= DECK_BAND) ? best : null;
+  }
+  /* roadYAt(x, z): interpolated profile Y of the nearest road segment
+     whose surface covers (x, z), else null. */
+  function roadYAt(x, z){
+    var segs = roadHash.near(x, z), best = null, bd = 1e18;
+    for (var i = 0; i < segs.length; i++){
+      var s = segs[i], r = distToSeg(x, z, s.x1, s.z1, s.x2, s.z2);
+      if (r.d <= s.hw + 1.5 && r.d < bd){ bd = r.d; best = s.y1 + (s.y2 - s.y1) * r.t; }
+    }
+    return best;
+  }
+  /* Level-aware material: the mover's current surface Y decides which
+     side of a level structure it is on — a deck's surface at deck
+     height, the rail corridor at its own height, else ground truth.
+     NEAREST SURFACE WINS: where a road passes just under a deck (MLK
+     under the MARTA station viaduct, ~0.5u of vertical air), a mover
+     at the road's own profile height is on the road, not the deck —
+     the deck only claims a mover whose level is nearer the deck than
+     any road surface under it. (On a deck road the two coincide, so
+     the deck claim stands.) */
+  function materialAtLevel(x, z, levelY){
+    if (typeof levelY === 'number' && isFinite(levelY)){
+      var roadY = roadYAt(x, z);
+      var deck = deckForLevel(x, z, levelY);
+      if (deck){
+        if (roadY === null || Math.abs(levelY - roadY) >= Math.abs(levelY - deck.deckY))
+          return matByName(deck.surfaceMat);
+      }
+      /* the rail corridor claims its own height — except at grade
+         crossings, where the road surface IS the crossing surface and
+         is nearer the mover's level */
+      var ry = railYAt(x, z);
+      if (ry !== null && Math.abs(levelY - ry) <= 1.6 &&
+          (roadY === null || Math.abs(levelY - ry) < Math.abs(levelY - roadY)))
+        return MAT.SOLID;
+    }
+    return materialAt(x, z);
+  }
+  /* Rest surface Y at (x, z): deck surface when the mover is at deck
+     level; otherwise the package road profile under the point (the
+     candidate nearest the mover's level when stacked roads cross);
+     null when no package surface applies. */
+  function surfaceY(x, z, levelY){
+    var deck = deckForLevel(x, z, levelY);
+    var segs = roadHash.near(x, z), best = null, bestScore = 1e18;
+    for (var i = 0; i < segs.length; i++){
+      var s = segs[i];
+      var r = distToSeg(x, z, s.x1, s.z1, s.x2, s.z2);
+      if (r.d > s.hw + 1.5) continue;
+      var y = s.y1 + (s.y2 - s.y1) * r.t;
+      var score = (typeof levelY === 'number' && isFinite(levelY))
+        ? Math.abs(y - levelY) : -y;   /* no level hint: lowest surface */
+      if (score < bestScore){ bestScore = score; best = y; }
+    }
+    /* nearest surface wins, as in materialAtLevel: a road passing just
+       under the deck keeps its own surface */
+    if (deck && (best === null || Math.abs(deck.deckY - levelY) <= bestScore))
+      return deck.deckY;
+    return best;
+  }
+  /* Push-out for package building rings (used by CollisionMaterial.
+     pushOut): if p is inside a ring or within radius of its edge, push
+     to the nearest edge point + radius. Returns true if it moved p. */
+  function pushOutRings(p, radius){
+    var bs = buildingsNear(p.x, p.z), moved = false;
+    for (var i = 0; i < bs.length; i++){
+      var ring = bs[i].ring;
+      var inside = pointInRing(p.x, p.z, ring);
+      var ed = ringEdgeDist(p.x, p.z, ring);
+      if (!inside && ed >= radius) continue;
+      /* nearest edge point */
+      var bestD = 1e18, bx = 0, bz = 0;
+      for (var j = 0; j < ring.length - 1; j++){
+        var r = distToSeg(p.x, p.z, ring[j][0], ring[j][1], ring[j + 1][0], ring[j + 1][1]);
+        if (r.d < bestD){ bestD = r.d; bx = r.cx; bz = r.cz; }
+      }
+      var dx = p.x - bx, dz = p.z - bz, d = Math.sqrt(dx * dx + dz * dz);
+      if (inside){
+        /* Eject through the nearest edge: (dx, dz) points from the edge
+           INTO the building, so the exit is the edge point MINUS that
+           direction, one radius beyond the wall. */
+        if (d > 0.001){ p.x = bx - dx / d * radius; p.z = bz - dz / d * radius; }
+        else { p.x = bx + radius; }
+        moved = true;
+      } else if (d > 0.001 && d < radius){
+        var push = (radius - d) / d;
+        p.x += dx * push; p.z += dz * push; moved = true;
+      }
+    }
+    return moved;
+  }
+
+  return { materialAt: materialAt, materialAtLevel: materialAtLevel,
+           surfaceY: surfaceY, pushOutRings: pushOutRings,
+           onRoad: onRoad, inWater: inWater, inBuilding: inBuilding,
+           railHit: railHit, railYAt: railYAt, deckAt: deckAt, _pkg: pkg };
+}
+
+/* ============================ rendering ================================= */
+/* Deck slabs + rail corridor meshes. Only in the browser build with a
+   live scene; purely visual (collision truth is the provider above). */
+function buildRenderGroup(pkg){
+  if (typeof THREE === 'undefined' || typeof scene === 'undefined' || !scene)
+    return null;
+  var g = new THREE.Group();
+  g.name = 'packageRender_' + pkg.id;
+  /* decks: a flat slab whose top is the deck surface */
+  var deckMat = new THREE.MeshLambertMaterial({ color: 0x8b8f94 });
+  var edgeMat = new THREE.MeshLambertMaterial({ color: 0x5d6066 });
+  pkg.decks.forEach(function(d){
+    try {
+      var shape = new THREE.Shape();
+      d.poly.forEach(function(pt, i){
+        if (i === 0) shape.moveTo(pt[0], -pt[1]); else shape.lineTo(pt[0], -pt[1]);
+      });
+      var geo = new THREE.ExtrudeGeometry(shape, { depth: 0.6, bevelEnabled: false });
+      var mesh = new THREE.Mesh(geo, d.surfaceMat === 'RAIL' ? edgeMat : deckMat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.y = d.deckY - 0.6;
+      g.add(mesh);
+    } catch(e){}
+  });
+  /* rail: bed ribbon + steel rails along each centreline */
+  var bedMat = new THREE.MeshLambertMaterial({ color: 0x4a4238 });
+  var railMat = new THREE.LineBasicMaterial({ color: 0xb9c0c7 });
+  pkg.rail.forEach(function(r){
+    try {
+      var w = (r.tracks || 1) * 1.6 + 1.6;
+      var pos = [];
+      for (var i = 1; i < r.pts.length; i++){
+        var a = r.pts[i - 1], b = r.pts[i];
+        var dx = b[0] - a[0], dz = b[1] - a[1];
+        var len = Math.sqrt(dx * dx + dz * dz) || 1;
+        var nx = -dz / len * w, nz = dx / len * w;
+        var ya = (r.ys[i - 1] || 0) + 0.07, yb = (r.ys[i] || 0) + 0.07;
+        pos.push(a[0] + nx, ya, a[1] + nz, a[0] - nx, ya, a[1] - nz, b[0] - nx, yb, b[1] - nz);
+        pos.push(a[0] + nx, ya, a[1] + nz, b[0] - nx, yb, b[1] - nz, b[0] + nx, yb, b[1] + nz);
+      }
+      var bg = new THREE.BufferGeometry();
+      bg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      var bed = new THREE.Mesh(bg, bedMat);
+      bed.frustumCulled = false;
+      g.add(bed);
+      var lp = [];
+      for (var j = 1; j < r.pts.length; j++){
+        var a2 = r.pts[j - 1], b2 = r.pts[j];
+        var dx2 = b2[0] - a2[0], dz2 = b2[1] - a2[1];
+        var len2 = Math.sqrt(dx2 * dx2 + dz2 * dz2) || 1;
+        var ox = -dz2 / len2 * 0.75, oz = dx2 / len2 * 0.75;
+        var ya2 = (r.ys[j - 1] || 0) + 0.16, yb2 = (r.ys[j] || 0) + 0.16;
+        lp.push(a2[0] + ox, ya2, a2[1] + oz, b2[0] + ox, yb2, b2[1] + oz);
+        lp.push(a2[0] - ox, ya2, a2[1] - oz, b2[0] - ox, yb2, b2[1] - oz);
+      }
+      var lg = new THREE.BufferGeometry();
+      lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
+      var rails = new THREE.LineSegments(lg, railMat);
+      rails.frustumCulled = false;
+      g.add(rails);
+    } catch(e){}
+  });
+  /* ground structures (Phase D): the airport pavement the Phase C
+     renderer skipped — aprons/taxiways as flat shapes seated on the
+     terrain, the runway + taxilanes as width-true strips on their
+     authored elevation profiles. Purely visual: movers meet this
+     ground through the terrain and road surfaces, as before. */
+  var paveMat = new THREE.MeshLambertMaterial({ color: 0x74777c });
+  var closedMat = new THREE.MeshLambertMaterial({ color: 0x55524a });
+  pkg.groundStructures.forEach(function(s){
+    try {
+      if (s.poly && s.poly.length >= 3){
+        var cx = 0, cz = 0, i;
+        for (i = 0; i < s.poly.length; i++){ cx += s.poly[i][0]; cz += s.poly[i][1]; }
+        cx /= s.poly.length; cz /= s.poly.length;
+        var gy = pkg.terrain.heightYAtRuntime(cx, cz);
+        var shp = new THREE.Shape();
+        s.poly.forEach(function(pt, j){
+          if (j === 0) shp.moveTo(pt[0], -pt[1]); else shp.lineTo(pt[0], -pt[1]);
+        });
+        var gm = new THREE.Mesh(new THREE.ShapeGeometry(shp),
+                                s.kind === 'runway_closed' ? closedMat : paveMat);
+        gm.rotation.x = -Math.PI / 2;
+        gm.position.y = (gy === null ? 0 : gy) + 0.06;
+        g.add(gm);
+      } else if (s.pts && s.pts.length >= 2){
+        var hw = ((s.width_m || 10) * window.MapFrame.S) / 2;
+        var pos = [];
+        for (var i2 = 1; i2 < s.pts.length; i2++){
+          var a = s.pts[i2 - 1], b = s.pts[i2];
+          var dx = b[0] - a[0], dz = b[1] - a[1];
+          var len = Math.sqrt(dx * dx + dz * dz) || 1;
+          var nx = -dz / len * hw, nz = dx / len * hw;
+          var ya = (typeof s.ys[i2 - 1] === 'number') ? s.ys[i2 - 1] + 0.06
+                   : (pkg.terrain.heightYAtRuntime(a[0], a[1]) || 0) + 0.06;
+          var yb = (typeof s.ys[i2] === 'number') ? s.ys[i2] + 0.06
+                   : (pkg.terrain.heightYAtRuntime(b[0], b[1]) || 0) + 0.06;
+          pos.push(a[0] + nx, ya, a[1] + nz, a[0] - nx, ya, a[1] - nz, b[0] - nx, yb, b[1] - nz);
+          pos.push(a[0] + nx, ya, a[1] + nz, b[0] - nx, yb, b[1] - nz, b[0] + nx, yb, b[1] + nz);
+        }
+        var bg2 = new THREE.BufferGeometry();
+        bg2.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        var strip = new THREE.Mesh(bg2, s.kind === 'runway_closed' ? closedMat : paveMat);
+        strip.frustumCulled = false;
+        g.add(strip);
+      }
+    } catch(e){}
+  });
+  scene.add(g);
+  return g;
+}
+
+/* ================== legacy-shaped world (Phase D) ===================== */
+/* The world build (renderer, traffic, GPS, feature layers) consumes
+   legacy-shaped globals. Rather than rewriting any of them for the
+   swap, the converted package is RE-EXPRESSED in those shapes here —
+   one adapter, next to the one conversion. Shapes:
+     ROAD_DATA      {cat: [{name, pts, ys, ramp?}]} — records carrying
+                    ys take buildRoads' BAKED path (stored profile, no
+                    re-derivation), and the roadDrawData built from
+                    them feeds traffic + GPS unchanged.
+     OSM_BUILDINGS  [[x, z, w, d, h, type], ...] — each building's real
+                    ring reduced to its minimum-area oriented rectangle
+                    (centre + side lengths); h is the package height,
+                    carried in the same units the legacy records used
+                    (their height distributions match — same source).
+                    Collision truth stays the provider's real rings;
+                    this shape is the render/placement form, exactly
+                    the role it plays in legacy mode.
+     __PKG_WATER    {bodies: [{x, z, rx, rz, ring, surfaceY, depthFt,
+                    name}], streams: [{pts, name}]} for buildWater's
+                    package branch in index.html.
+   Category mapping follows the renderer's own table (ROAD_WIDTHS /
+   the INTERSTATES name rule in index.html): freeways land in
+   'highway' so I-20 / I-285 records pick up the interstate width by
+   name; arterials land in 'major_artery', the legacy big-street
+   bucket. */
+var PKG_ROAD_CAT = { motorway: 'highway', motorway_link: 'highway',
+                     arterial: 'major_artery', local: 'local',
+                     service: 'local' };
+/* Building type codes per index.html's osmBuildings: 0 house,
+   1 commercial, 2 apartment/large, 3 other. */
+var PKG_BLDG_TYPE = { house: 0, yes: 0, retail: 1, commercial: 1,
+                      apartments: 2 };
+function minAreaRect(ring){
+  /* Minimum-area oriented rectangle over a ring (each edge direction
+     tried as a candidate axis — rings are small). Returns
+     {cx, cz, w, d} in the ring's own coordinates. */
+  var best = null, i, j;
+  for (i = 0; i < ring.length - 1; i++){
+    var ex = ring[i + 1][0] - ring[i][0], ez = ring[i + 1][1] - ring[i][1];
+    var el = Math.sqrt(ex * ex + ez * ez);
+    if (el < 1e-9) continue;
+    var ux = ex / el, uz = ez / el, vx = -uz, vz = ux;
+    var mnU = 1e18, mxU = -1e18, mnV = 1e18, mxV = -1e18;
+    for (j = 0; j < ring.length; j++){
+      var pu = ring[j][0] * ux + ring[j][1] * uz;
+      var pv = ring[j][0] * vx + ring[j][1] * vz;
+      if (pu < mnU) mnU = pu; if (pu > mxU) mxU = pu;
+      if (pv < mnV) mnV = pv; if (pv > mxV) mxV = pv;
+    }
+    var area = (mxU - mnU) * (mxV - mnV);
+    if (!best || area < best.area){
+      var cu = (mnU + mxU) / 2, cvv = (mnV + mxV) / 2;
+      best = { area: area, cx: cu * ux + cvv * vx, cz: cu * uz + cvv * vz,
+               w: mxU - mnU, d: mxV - mnV };
+    }
+  }
+  if (!best){ /* degenerate ring: fall back to the plain bbox */
+    var mnx = 1e18, mxx = -1e18, mnz = 1e18, mxz = -1e18;
+    for (i = 0; i < ring.length; i++){
+      if (ring[i][0] < mnx) mnx = ring[i][0]; if (ring[i][0] > mxx) mxx = ring[i][0];
+      if (ring[i][1] < mnz) mnz = ring[i][1]; if (ring[i][1] > mxz) mxz = ring[i][1];
+    }
+    best = { cx: (mnx + mxx) / 2, cz: (mnz + mxz) / 2, w: mxx - mnx, d: mxz - mnz };
+  }
+  return best;
+}
+function buildLegacyGlobals(pkg){
+  var roadData = { highway: [], major_artery: [], minor_artery: [], local: [] };
+  pkg.roads.forEach(function(r){
+    var cat = PKG_ROAD_CAT[r.cls] || 'local';
+    var rec = { name: r.name || 'Unnamed St', pts: r.pts, ys: r.ys };
+    if (r.ramp) rec.ramp = true;
+    roadData[cat].push(rec);
+  });
+  var buildings = pkg.buildings.map(function(b){
+    var rect = minAreaRect(b.ring);
+    var t = PKG_BLDG_TYPE[b.use];
+    return [rect.cx, rect.cz, Math.max(1, rect.w), Math.max(1, rect.d),
+            (typeof b.height_m === 'number' && b.height_m > 0) ? b.height_m : 4.5,
+            (t === undefined) ? 3 : t];
+  });
+  var water = { bodies: [], streams: [] };
+  pkg.waterBodies.forEach(function(w){
+    var mnx = 1e18, mxx = -1e18, mnz = 1e18, mxz = -1e18, i;
+    for (i = 0; i < w.ring.length; i++){
+      if (w.ring[i][0] < mnx) mnx = w.ring[i][0]; if (w.ring[i][0] > mxx) mxx = w.ring[i][0];
+      if (w.ring[i][1] < mnz) mnz = w.ring[i][1]; if (w.ring[i][1] > mxz) mxz = w.ring[i][1];
+    }
+    var cx = (mnx + mxx) / 2, cz = (mnz + mxz) / 2;
+    /* Depth (integration, 2026-10-30): NOT derived from the terrain
+       bed. Over open water the lidar DEM reads the water SURFACE, so
+       the carved bed (surface - 0.6 m — the anti-burial floor) would
+       cap every lake at ~2 ft and the player could never swim in one,
+       against Joshua's explore ruling (lakes/ponds are SWIM water,
+       2026-10-30). Lake depth is the game's per-feature model
+       (waterDepthFt in index.html): Tatum ~12 ft (Joshua's 2026-10-11
+       ground truth), ponds ~6 ft, lakes ~12 ft. The named anchor
+       carries its depth here; the rest fall through to that model. */
+    var depthFt = /tatum/i.test(w.name || '') ? 12 : undefined;
+    water.bodies.push({ x: cx, z: cz, rx: (mxx - mnx) / 2, rz: (mxz - mnz) / 2,
+                        ring: w.ring, surfaceY: w.surfaceY, depthFt: depthFt,
+                        name: w.name });
+  });
+  pkg.waterStreams.forEach(function(s){
+    /* Depth from the data (integration, 2026-10-30): surveyed surface
+       profile minus the terrain bed at the stations, in feet — the
+       creek reads ~2 ft (wading), the Chattahoochee thalweg ~6 ft
+       (swimming). buildWater's stream registration carries it through;
+       waterDepthAt prefers the exact per-point profile depth anyway. */
+    var depthFt = 2;
+    if (s.ys && s.ys.length === s.pts.length){
+      var mx = 0;
+      for (var di = 0; di < s.pts.length; di++){
+        var bd = pkg.terrain.heightYAtRuntime(s.pts[di][0], s.pts[di][1]);
+        if (typeof bd === 'number' && typeof s.ys[di] === 'number')
+          mx = Math.max(mx, (s.ys[di] - bd) / 0.304);
+      }
+      if (mx > 0) depthFt = Math.max(2, Math.min(40, mx));
+    }
+    water.streams.push({ pts: s.pts, name: s.name, ys: s.ys,
+                         width: s.halfW * 2, depthFt: depthFt,
+                         /* 2026-11-01 fix batch v2: per-station widths
+                            + the baked single-surface rings ride
+                            through to buildWater (see map_loader's
+                            stream adapter). */
+                         widths: s.widths || null,
+                         surfRings: s.surfRings || null });
+  });
+  return { roadData: roadData, buildings: buildings, water: water };
+}
+
+/* bootWorld() — the Phase D seam entry, called by index.html's zone
+   seam BEFORE the deferred queue continues to the world build. Loads
+   the package, re-expresses it as the legacy-shaped globals (stashed
+   on window.__PKG_* for the seam to install), makes the package
+   terrain heightAt's source and the terrain mesh's precompute, and
+   resolves true. ANY failure resolves false and the seam degrades
+   into the NO MAP DATA state (Phase F: there is no legacy fallback —
+   the legacy datasets were removed with the map). The loaded package
+   is kept (__PKG_PREBUILT) so the late activation below runs on the
+   SAME load and conversion. */
+/* pkgTerrainGrid(boundsRuntime) — Phase G: the terrain-mesh grid for a
+   partial package. index.html's buildTerrain normally draws the legacy
+   core rect [0,WX]x[0,WZ] as a 600x800-cell plane (TERR_CX = WX/600,
+   TERR_CZ = WZ/800 — the constants below MUST match index.html's).
+   The rebuilt Adamsville package extends past that rect (north, west
+   and east fringes), so in partial mode the mesh instead covers the
+   package's own runtime bounds, aligned OUTWARD to the same cell
+   lattice (origin offsets are whole cells, so the mesh vertices sit
+   on the same lattice the legacy grid uses and terrainMeshY stays
+   coherent). The publish-time generator (zone-build/
+   publish-partial-package.js) computes the identical grid from the
+   identical formula and bakes terrain_heights_pkg.bin from it; the
+   harness cross-checks the two computations. */
+function pkgTerrainGrid(br){
+  if (!br) return null;
+  var CX = 8000 / 600, CZ = 12000 / 800;
+  var ox = Math.floor(br.x0 / CX) * CX, oz = Math.floor(br.z0 / CZ) * CZ;
+  var segx = Math.ceil((br.x1 - ox) / CX), segz = Math.ceil((br.z1 - oz) / CZ);
+  if (!(segx > 0 && segz > 0) || segx * segz > 4000000) return null;
+  return { ox: ox, oz: oz, segx: segx, segz: segz };
+}
+
+var _bootWorldPromise = null;
+function bootWorld(){
+  if (_bootWorldPromise) return _bootWorldPromise;
+  _bootWorldPromise = loadPackage(window.MapRegistry.defaultMapId,
+                                  window.MapSystem.packageBaseOverride())
+    .then(function(pkg){
+      window.__PKG_PREBUILT = pkg;
+      /* Phase G: publish the partial flag + terrain grid BEFORE the
+         core block evaluates (the seam awaits this promise), so every
+         gate in index.html and the deferred-queue skip see them. */
+      if (pkg.partial){
+        window.__PKG_PARTIAL = true;
+        window.__PKG_TERRAIN_GRID = pkgTerrainGrid(pkg.boundsRuntime);
+        window.__PKG_CANOPY = pkg.canopy || null;
+      }
+      var g = buildLegacyGlobals(pkg);
+      window.__PKG_ROAD_DATA = g.roadData;
+      window.__PKG_BUILDINGS = g.buildings;
+      window.__PKG_BLDG_COUNT = g.buildings.length;
+      window.__PKG_WATER = g.water;
+      /* 2026-11-07: boulder records for buildPkgBoulders (falls +
+         shoals) — staged beside the water, same seam. */
+      window.__PKG_BOULDERS = pkg.boulders || [];
+      window.__PKG_HEIGHT_AT = pkg.terrain.heightYAtRuntime;
+      window.__PKG_WORLD = true;
+      /* Zone identity for the systems that read __ZONE_META (report
+         routing, crash logs, road sync's converted marker): the legacy
+         zone.json is not fetched in package mode, so publish the
+         package's identity in its place. Bounds stay on zoneloader's
+         literal table, which the package bounds match exactly. */
+      window.__ZONE_META = { id: pkg.id, converted: true, source: 'package' };
+      note('package world ready: ' + pkg.id + ' — adapter globals built (' +
+           g.buildings.length + ' buildings)');
+      /* The terrain mesh's precompute for the package heights, in the
+         identical vertex order the legacy bin uses (600x800 segments,
+         481,401 values). A miss is not fatal: __TERR_H_PRE = null makes
+         buildTerrain compute the mesh from heightAt — the same
+         package terrain through the hook, just slower.
+         Phase G partial packages bake their own precompute instead:
+         terrain_heights_pkg.bin covers the partial terrain grid
+         (__PKG_TERRAIN_GRID above; (segx+1) x (segz+1) values in the
+         same row-major vertex order buildTerrain consumes). */
+      if (pkg.partial){
+        return fetchBin(pkg.base + 'terrain_heights_pkg.bin')
+          .then(function(buf){
+            var arr = new Float32Array(buf);
+            window.__TERR_H_PRE = arr.length ? arr : null;
+            return true;
+          })
+          .catch(function(){ window.__TERR_H_PRE = null; return true; });
+      }
+      return fetchBin(pkg.base + 'terrain_heights_600x800.bin')
+        .then(function(buf){
+          var arr = new Float32Array(buf);
+          window.__TERR_H_PRE = (arr.length === 481401) ? arr : null;
+          return true;
+        })
+        .catch(function(){ window.__TERR_H_PRE = null; return true; });
+    })
+    .catch(function(err){
+      note('package world boot failed (' + err.message + ') — no map data; the NO MAP DATA state serves');
+      return false;
+    });
+  return _bootWorldPromise;
+}
+
+/* ============================ load + activate =========================== */
+/* nearpost_rows.bin is Uint64 LE (row-start value indices, nz+1
+   entries ending at the stored-post total). Indices stay far below
+   2^32, so the table converts losslessly to a Uint32Array for the
+   D-grid sampler. */
+function u64RowsToU32(buf){
+  var dv = new DataView(buf);
+  var n = Math.floor(buf.byteLength / 8);
+  var out = new Uint32Array(n);
+  for (var i = 0; i < n; i++) out[i] = Number(dv.getBigUint64(i * 8, true));
+  return out;
+}
+
+function loadPackage(mapId, baseOverride){
+  var entry = window.MapRegistry.get(mapId);
+  if (!entry) return Promise.reject(new Error('unknown map ' + mapId));
+  var base = baseOverride || entry.packageBase;
+  if (!/\/$/.test(base)) base += '/';
+  /* zone.json loads FIRST on its own: it declares the terrain format,
+     and the terrain fetch depends on it (single-grid terrain.bin for
+     Phase B/C packages; the four D-grid files for Phase G). Every
+     other package file is format-independent and fetches in parallel
+     with the terrain. */
+  return fetchJSON(base + 'zone.json').then(function(zone){
+    var names = ['roads', 'buildings', 'water', 'rail', 'structures',
+                 'places', 'pins', 'signs'];
+    var jsonJobs = names.map(function(n){ return fetchJSON(base + n + '.json'); });
+    var terrainJob;
+    if (zone.terrain && zone.terrain.format === 'dgrid'){
+      var f = zone.terrain.files || {};
+      /* Chunked near-heights: when terrain.files.nearParts is
+         declared, the near file travels in <= 8 MB parts (the 44 MB
+         monolith exceeds the GitHub blob API) and fetchBinParts
+         reassembles the identical byte stream for the sampler.
+         Without nearParts, the single-file fetch runs as before. */
+      var nearJob = (f.nearParts && f.nearParts.parts &&
+                     f.nearParts.parts.length)
+        ? fetchBinParts(base, f.nearParts)
+        : fetchBin(base + (f.near || 'heights_near_2m.bin'));
+      terrainJob = Promise.all([
+        fetchBin(base + (f.base || 'heights_base_10m.bin')),
+        nearJob,
+        fetchBin(base + (f.mask || 'nearpost_mask.bin')),
+        fetchBin(base + (f.rows || 'nearpost_rows.bin'))
+      ]).then(function(bs){
+        return { dgrid: { base: new Float32Array(bs[0]),
+                          near: new Float32Array(bs[1]),
+                          mask: new Uint8Array(bs[2]),
+                          rows: u64RowsToU32(bs[3]) } };
+      });
+    } else {
+      terrainJob = fetchBin(base + 'terrain.bin')
+        .then(function(buf){ return { grid: new Float32Array(buf) }; });
+    }
+    /* Canopy (optional): fetched with the rest; any failure resolves
+       to null — the woodland is dressing on the terrain, never a
+       reason to fail the boot (see the header note). */
+    var canopyJob = (zone.canopy && zone.canopy.file)
+      ? fetchBin(base + zone.canopy.file).then(
+          function(buf){ return new Uint8Array(buf); },
+          function(){ return null; })
+      : Promise.resolve(null);
+    return Promise.all([Promise.all(jsonJobs), terrainJob, canopyJob])
+      .then(function(res){
+        var j = res[0], terr = res[1];
+        var raw = { zone: zone, roads: j[0], buildings: j[1],
+                    water: j[2], rail: j[3], structures: j[4],
+                    places: j[5], pins: j[6], signs: j[7],
+                    terrain: terr.grid || null, dgrid: terr.dgrid || null };
+        var pkg = buildPackage(raw);
+        pkg.base = base;
+        if (res[2] && zone.canopy) pkg.canopy = {
+          cover: res[2], cols: zone.canopy.cols|0, rows: zone.canopy.rows|0,
+          cellM: zone.canopy.cell_m || 10,
+          x0: zone.bounds_m.xMin, z0: zone.bounds_m.zMin,
+          threshold: zone.canopy.threshold_pct || 30 };
+        return pkg;
+      });
+  });
+}
+
+function activatePackage(pkg){
+  if (pkg._activated) return pkg;   /* one package, one activation */
+  pkg._activated = true;
+  /* 1+2. material truth + ground sampler into the ONE gate */
+  try {
+    if (typeof CollisionMaterial !== 'undefined' && CollisionMaterial.setPackageProvider)
+      CollisionMaterial.setPackageProvider(pkg.provider);
+    if (typeof CollisionMaterial !== 'undefined' && CollisionMaterial.setGroundSampler)
+      CollisionMaterial.setGroundSampler(pkg.terrain.heightYAtRuntime);
+  } catch(e){ note('provider registration failed: ' + e.message); }
+  /* 3. render decks + rail */
+  try { pkg.renderGroup = buildRenderGroup(pkg); } catch(e){}
+  /* 4. rail handoff for marta_system (converted centrelines) */
+  try {
+    var marta = null, csx = [];
+    pkg.rail.forEach(function(r){
+      if (/MARTA/.test(r.operator || '') || /MARTA/.test(r.name || '')) marta = r;
+      else csx.push(r);
+    });
+    window.PACKAGE_RAIL = { marta: marta, csx: csx, all: pkg.rail, pkg: pkg };
+  } catch(e){}
+  /* 5. proven signals handoff (2026-10-28 audit fix): the package's
+     surveyed traffic signals (pkg.signs, kind 'signal') as a named
+     surface. buildPackage's convPointRec already converted these
+     points to RUNTIME coordinates (the same conversion the package
+     places and rail carry) — they are published as-is, never
+     converted twice. index.html's street-furniture pass reads the
+     same records off the prebuilt package at world-build time (it
+     runs before activation in the boot order) and places its traffic
+     lights from them in package mode — see streetFurniture there. */
+  try {
+    window.PACKAGE_SIGNALS = pkg.signs.filter(function(s){ return s.kind === 'signal' && s.at; })
+      .map(function(s){
+        return { id: s.id || null, name: s.name || 'signal', kind: 'signal',
+                 x: s.at[0], z: s.at[1], at: [s.at[0], s.at[1]] };
+      });
+  } catch(e){}
+  window.PACKAGE_MAP = pkg;
+  window.MapSystem.activePackage = pkg;
+  note('package ACTIVE: ' + pkg.id + ' — ' + pkg.roads.length + ' roads, ' +
+       pkg.buildings.length + ' buildings, ' + pkg.decks.length + ' decks, ' +
+       pkg.rail.length + ' rail records (base ' + pkg.base + ')');
+  return pkg;
+}
+
+/* ===================== activation driver (2026-10-28 audit fix) =====
+   THE DEFECT THIS REPLACES: tryBootPackage used to fire ONCE, 50 ms
+   after DOMContentLoaded. The seam stamps __PKG_SEAM_DONE at the START
+   of zone injection, but __PKG_PREBUILT only lands when the ~25 MB
+   package fetch resolves — seconds later. The one-shot call therefore
+   saw "seam done, no prebuilt package" and returned, and NOTHING ever
+   called it again: on a normal package boot the collision provider,
+   the deck/rail rendering and PACKAGE_RAIL silently never activated.
+
+   THE DRIVER: a bounded poll (every 250 ms) that rides the seam's own
+   load instead of racing it —
+     * activation happens only after bootWorld() has resolved (the
+       prebuilt package exists) AND collision_material.js has defined
+       its registration API, so activatePackage can never half-apply
+       (provider missing while decks render);
+     * bootWorld() is idempotent (one cached promise), so the driver
+       can safely start it when the seam hasn't — the package is never
+       fetched twice, whichever path gets there first;
+     * a seam fallback (__PKG_SEAM_FELL_BACK) settles the driver at
+       once: legacy serves, and no package provider may be layered
+       over a legacy world (a second truth);
+     * direct servings without index.html's seam keep working: if the
+       seam has not run within the grace window, the driver starts
+       bootWorld() itself (the old no-seam path, now through the same
+       idempotent entry). */
+var _pkgDriverTicks = 0, _pkgDriverSettled = false;
+var PKG_DRIVER_TICK_MS = 250, PKG_DRIVER_MAX_TICKS = 480,  /* ~2 minutes */
+    PKG_NO_SEAM_GRACE_TICKS = 12;                          /* ~3 seconds */
+function _collisionApiReady(){
+  return typeof CollisionMaterial !== 'undefined' &&
+         typeof CollisionMaterial.setPackageProvider === 'function' &&
+         typeof CollisionMaterial.setGroundSampler === 'function';
+}
+function tryBootPackage(){
+  if (_pkgDriverSettled) return;
+  _pkgDriverTicks++;
+  /* A prebuilt package + the collision API = activate, exactly once
+     (activatePackage also guards on pkg._activated). */
+  if (window.__PKG_PREBUILT){
+    if (_collisionApiReady()){
+      _pkgDriverSettled = true;
+      activatePackage(window.__PKG_PREBUILT);
+    } else if (_pkgDriverTicks >= PKG_DRIVER_MAX_TICKS){
+      _pkgDriverSettled = true;
+      note('package built but collision_material never became ready — ' +
+           'provider NOT registered (world serves without the package gate)');
+    }
+    return;
+  }
+  /* The seam found no bootable map (Phase F no-map state): settle,
+     activate nothing. */
+  if (window.__PKG_SEAM_FELL_BACK){ _pkgDriverSettled = true; return; }
+  /* Every remaining path is bounded: a hung fetch or a seam that
+     never runs must not leave this poll alive for the whole session. */
+  if (_pkgDriverTicks >= PKG_DRIVER_MAX_TICKS){
+    _pkgDriverSettled = true;
+    note('package activation driver gave up waiting — no package active');
+    return;
+  }
+  /* The seam's load is in flight (bootWorld called, promise pending):
+     keep polling — __PKG_PREBUILT appears when it resolves. */
+  if (_bootWorldPromise) return;
+  if (window.__PKG_SEAM_DONE){
+    /* The seam decided but never started bootWorld (e.g. the loader
+       was not ready at seam time). Start it here — idempotent, so the
+       seam's own later call would still share the one fetch. If the
+       seam chose legacy outright, settle instead. */
+    if (window.MapSystem && window.MapSystem.packageModeRequested()) bootWorld();
+    else _pkgDriverSettled = true;
+    return;
+  }
+  /* No seam yet. Inside the grace window, keep waiting for it; past
+     the grace window this serving has no seam — drive bootWorld()
+     directly (never a second fetch: bootWorld caches its promise). */
+  if (_pkgDriverTicks > PKG_NO_SEAM_GRACE_TICKS) bootWorld();
+}
+
+/* Boot attempt: start the activation driver. Deferred scripts run
+   before the world builds; the driver polls until the seam's package
+   load and collision_material are both ready, then activates once. */
+try {
+  if (typeof window !== 'undefined' && window.MapSystem &&
+      window.MapSystem.packageModeRequested()){
+    var _pkgDriverTimer = setInterval(function(){
+      try { tryBootPackage(); } catch(e){}
+      if (_pkgDriverSettled) clearInterval(_pkgDriverTimer);
+    }, PKG_DRIVER_TICK_MS);
+  }
+} catch(e){}
+
+window.MapLoader = {
+  loadPackage: loadPackage,
+  buildPackage: buildPackage,
+  activatePackage: activatePackage,
+  bootWorld: bootWorld,
+  buildLegacyGlobals: buildLegacyGlobals,
+  /* exposed for the Phase C/D harnesses + debugging (the fetch helpers
+     joined them 2026-11-07, for the boot-resume harness's timeout tests) */
+  _distToSeg: distToSeg, _pointInRing: pointInRing,
+  _ringInteriorPoint: ringInteriorPoint, _minAreaRect: minAreaRect,
+  _fetchJSON: fetchJSON, _fetchBin: fetchBin
+};
+})();

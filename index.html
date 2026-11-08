@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<!-- dev-hub: v1 2026-10-17 -->
+<!--
+  SURVIVING ADAMSVILLE - DEVELOPER HUB
+  ====================================
+  This root page is the hand-owned doorway to every page this repo
+  serves. It is NOT generated and NOT a copy of the game page (the
+  game lives at detailed/ and keeps its own address). The release
+  tool no longer mirrors anything onto this page - see HUB-NOTES
+  in the workspace record and the dated note in tools/release.py.
+
+  HOW TO ADD A PAGE (one edit):
+  1. Put the new page file in the repo (and, if it is a new kind of
+     file, declare it in tools/inventory-registry.json so the
+     inventory gate stays green).
+  2. Add ONE line to the matching list below - copy any existing
+     entry line and change the address and the words.
+  3. Push this file. Done - the hub is the only place links live.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Surviving Adamsville - Developer Hub</title>
+<style>
+  /* Layout grammar of the suite: anchors pin, shares divide, weights
+     fill. The header is anchored at the top; the sections divide the
+     rest of the screen between them in proportion; each link row
+     carries the weight of its line. No fixed pixel heights, so
+     nothing clips on a small phone or a laptop. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #101014; color: #f5f4ee;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; min-height: 100vh;
+  }
+  header {
+    position: sticky; top: 0; z-index: 2;
+    background: #17171d; border-bottom: 2px solid #c9a227;
+    padding: 14px 18px;
+  }
+  header h1 { margin: 0; font-size: clamp(22px, 4.5vmin, 32px); }
+  header p { margin: 4px 0 0; color: #b9b7ad; font-size: clamp(14px, 2.6vmin, 17px); }
+  main {
+    flex: 1 1 auto; width: 100%; max-width: 1100px; margin: 0 auto;
+    padding: 10px 14px 26px;
+    display: flex; flex-direction: column;
+  }
+  section { flex: 0 1 auto; margin-top: 18px; }
+  section h2 {
+    margin: 0 0 8px; font-size: clamp(18px, 3.4vmin, 24px);
+    color: #e8c84a; border-bottom: 1px solid #33333d; padding-bottom: 6px;
+  }
+  ul.links { list-style: none; margin: 0; padding: 0;
+    display: grid; grid-template-columns: 1fr; gap: 8px; }
+  @media (min-width: 760px) {
+    ul.links { grid-template-columns: 1fr 1fr; }
+  }
+  ul.links li { min-width: 0; }
+  ul.links a {
+    display: flex; flex-direction: column; justify-content: center;
+    min-height: 56px; padding: 10px 14px;
+    background: #1d1d24; border: 1px solid #33333d; border-radius: 10px;
+    color: #f5f4ee; text-decoration: none;
+  }
+  ul.links a:active, ul.links a:hover { background: #26262f; border-color: #c9a227; }
+  ul.links a .t { font-size: clamp(16px, 3vmin, 19px); font-weight: 600; }
+  ul.links a .d { font-size: clamp(13px, 2.4vmin, 15px); color: #b9b7ad; margin-top: 2px; }
+  .series { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+  .series a {
+    display: flex; align-items: center; justify-content: center;
+    min-width: 52px; min-height: 52px; padding: 8px 10px;
+    background: #1d1d24; border: 1px solid #33333d; border-radius: 10px;
+    color: #f5f4ee; text-decoration: none; font-weight: 600;
+  }
+  .series a:active, .series a:hover { background: #26262f; border-color: #c9a227; }
+  .series .lbl { display: flex; flex-direction: column; justify-content: center;
+    padding: 4px 6px; flex: 1 1 170px; }
+  .series .lbl .t { font-weight: 600; font-size: clamp(16px, 3vmin, 19px); }
+  .series .lbl .d { color: #b9b7ad; font-size: clamp(13px, 2.4vmin, 15px); }
+  footer { padding: 12px 18px 20px; color: #8a887e;
+    font-size: clamp(12px, 2.2vmin, 14px); text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Surviving Adamsville - Developer Hub</h1>
+  <p>One doorway to every page in the repo. The game, the previews, the tools, the docs.</p>
+</header>
+<main>
+
+  <!-- HUB LINK LIST - PLAY (add new lines here, same shape) -->
+  <section id="play">
+    <h2>Play the game</h2>
+    <ul class="links">
+      <li><a href="detailed/"><span class="t">Surviving Adamsville</span><span class="d">The game itself - the web build, served from the one source tree.</span></a></li>
+      <li><a href="detailed/basketball.html"><span class="t">Basketball — 535 Backyard Court</span><span class="d">The basketball mini-game: 1 on 1 or 3 on 3 at the goal tree behind 535. In the game, walk in between the trees in the backyard and it invites you here.</span></a></li>
+      <li><a href="detailed/chess.html"><span class="t">Chess — Mini Game</span><span class="d">A full game of chess on one board: two players pass and play, and every move is written to a score sheet as you go. The computer opponent comes later, designed from Joshua's own score sheets.</span></a></li>
+    </ul>
+  </section>
+
+  <!-- HUB LINK LIST - DIAGNOSTICS AND PREVIEWS -->
+  <section id="diagnostics">
+    <h2>Diagnostics &amp; previews</h2>
+    <ul class="links">
+      <li><a href="tools/map-view/map-view.html"><span class="t">Rebuilt map viewer</span><span class="d">The whole rebuilt map, Google-Maps style - pan, zoom, search a street, Street / Satellite / Terrain layers.</span></a></li>
+      <li><a href="map-data/diagnostics/road-buried-view.html"><span class="t">Road view</span><span class="d">The standing road preview - check roads against the ground.</span></a></li>
+      <li><a href="map-data/diagnostics/road-converted-view.html"><span class="t">Converted roads view</span><span class="d">The converted road set, drawn for inspection.</span></a></li>
+      <li><a href="map-data/diagnostics/road-buried-walk.html"><span class="t">Walk test - buried roads</span><span class="d">Walk the roads and see what is buried or floating.</span></a></li>
+      <li><a href="map-data/diagnostics/road-buried-walk2.html"><span class="t">Walk test 2</span><span class="d">Second walk-test page for buried roads.</span></a></li>
+      <li><a href="map-data/diagnostics/ground-compare-535.html"><span class="t">535 Dollar Mill - ground comparison</span><span class="d">Ground heights around the home base, compared side by side.</span></a></li>
+      <li><a href="map-data/diagnostics/house-buried-1.html"><span class="t">House buried check</span><span class="d">A house checked against the ground it sits on.</span></a></li>
+      <li><a href="map-data/game-map/viewer.html"><span class="t">Converted map viewer</span><span class="d">The converted map dataset - roads, buildings, water, terrain.</span></a></li>
+    </ul>
+    <div class="series" style="margin-top:8px">
+      <div class="lbl"><span class="t">House grading series</span><span class="d">The same house, graded step by step - pages 2 to 12.</span></div>
+      <a href="map-data/diagnostics/house-graded-2.html">2</a>
+      <a href="map-data/diagnostics/house-graded-3.html">3</a>
+      <a href="map-data/diagnostics/house-graded-4.html">4</a>
+      <a href="map-data/diagnostics/house-graded-5.html">5</a>
+      <a href="map-data/diagnostics/house-graded-6.html">6</a>
+      <a href="map-data/diagnostics/house-graded-7.html">7</a>
+      <a href="map-data/diagnostics/house-graded-8.html">8</a>
+      <a href="map-data/diagnostics/house-graded-9.html">9</a>
+      <a href="map-data/diagnostics/house-graded-10.html">10</a>
+      <a href="map-data/diagnostics/house-graded-11.html">11</a>
+      <a href="map-data/diagnostics/house-graded-12.html">12</a>
+    </div>
+    <ul class="links" style="margin-top:8px">
+      <li><a href="map-data/resource-map-1-roads-water.html"><span class="t">Reference map 1 - roads &amp; water</span><span class="d">Research reference from the border work - kept so it is never redone.</span></a></li>
+      <li><a href="map-data/resource-map-2-places.html"><span class="t">Reference map 2 - places</span><span class="d">Research reference - places inside the border.</span></a></li>
+      <li><a href="map-data/resource-map-3-transit.html"><span class="t">Reference map 3 - transit</span><span class="d">Research reference - transit lines.</span></a></li>
+      <li><a href="map-data/resource-map-4-satellite.html"><span class="t">Reference map 4 - satellite</span><span class="d">Research reference - satellite view.</span></a></li>
+      <li><a href="map-data/resource-terrain-1-google-style.html"><span class="t">Reference terrain 1</span><span class="d">Research reference - terrain, map style.</span></a></li>
+      <li><a href="map-data/resource-terrain-2-opentopo.html"><span class="t">Reference terrain 2</span><span class="d">Research reference - terrain, topo style.</span></a></li>
+      <li><a href="map-data/border-map.html"><span class="t">The revised border</span><span class="d">The map border as Joshua set it, corner by corner.</span></a></li>
+    </ul>
+  </section>
+
+  <!-- HUB LINK LIST - TOOLS -->
+  <section id="tools">
+    <h2>Tools</h2>
+    <ul class="links">
+      <li><a href="tools/decision-deck/decision-deck.html"><span class="t">Decision Deck</span><span class="d">The batch decision tool - swipe through the lists that need your eyes.</span></a></li>
+      <li><a href="tools/watcher/index.html"><span class="t">Watcher (repo copy)</span><span class="d">The map watcher app, reading the published game data live.</span></a></li>
+      <li><a href="https://kingmarkarnold-code.github.io/adamsville-watcher/"><span class="t">Watcher (published site)</span><span class="d">The watcher at its own long-standing address.</span></a></li>
+      <li><a href="viewers/web/index.html"><span class="t">Web map viewer</span><span class="d">The standalone web viewer for the game map.</span></a></li>
+      <li><a href="editors/map-editor/index.html"><span class="t">Map Editor (web entry)</span><span class="d">The Map Editor web page from its source set.</span></a></li>
+      <li><a href="editors/elevation-editor/index.html"><span class="t">Elevation Editor (web entry)</span><span class="d">The Elevation Editor web page - the editor is parked, its page stays listed.</span></a></li>
+    </ul>
+  </section>
+
+  <!-- HUB LINK LIST - DOCS AND REPO -->
+  <section id="docs">
+    <h2>Docs &amp; repo</h2>
+    <ul class="links">
+      <li><a href="https://github.com/kingmarkarnold-code/adamsville-play"><span class="t">The repository</span><span class="d">adamsville-play on GitHub - the one source.</span></a></li>
+      <li><a href="https://github.com/kingmarkarnold-code/adamsville-play/blob/main/ONE-SOURCE.md"><span class="t">One Source</span><span class="d">How the one tree works - deployments, stock, the clean repo.</span></a></li>
+      <li><a href="https://github.com/kingmarkarnold-code/adamsville-play/blob/main/INVENTORY.md"><span class="t">Inventory charter</span><span class="d">Why every file in the repo must earn its place.</span></a></li>
+      <li><a href="https://github.com/kingmarkarnold-code/adamsville-play/blob/main/README.md"><span class="t">Repo README</span><span class="d">The front page of the repository.</span></a></li>
+      <li><a href="https://github.com/kingmarkarnold-code/adamsville-play-archive"><span class="t">The archive</span><span class="d">The pre-clean-repo repository, kept whole - history and fossils.</span></a></li>
+    </ul>
+  </section>
+
+</main>
+<footer>
+  Surviving Adamsville - developer hub. The game lives at detailed/ and nowhere else;
+  every other page in the repo hangs off this door.
+</footer>
+</body>
+</html>

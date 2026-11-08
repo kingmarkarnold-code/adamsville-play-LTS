@@ -1,0 +1,129 @@
+{
+  "version": "2.0.9",
+  "changelog": "Cache + Apply working model (Joshua's redesign): opening a building loads it and its surrounding area ONCE into a working copy; every adjustment \u2014 drags, wall/corner sizing, all steppers including Rotation, typed numbers \u2014 changes only the working copy and the preview follows at once, so editing is fluid and nothing is sent back per change. A prominent Apply button commits the finished building in ONE verified save round trip; until Apply, nothing has left the machine. Unapplied changes are shown in the tab (dot + label, Apply lights up), and closing the tab or view, switching buildings, or quitting with unapplied changes asks Apply / Discard / Stay \u2014 work is never silently lost. Flagged buildings still refuse all edits. Everything from 2.0.8 rides along: the speed pass, ring-true picking with the sizing lock, collapsible Edit side panel, axis gizmo, game-colour surroundings, and the plain-spoken Detail Edit answer.",
+  "files": [
+    {
+      "path": "about.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/about.py",
+      "sha256": "cacfcf7cb7f0c020efca9d6ea1227e7a03e994275edcd49f1fdef0ff5f036461"
+    },
+    {
+      "path": "app.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/app.py",
+      "sha256": "397e958bc192ccdf0d7221e78da0b1d387fbea49993cf197856a9526da8c82a2"
+    },
+    {
+      "path": "buildingcanvas.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/buildingcanvas.py",
+      "sha256": "63ff24720818a7ff990651d539641cb893a132775af56ac6fcfacf666d0a4add"
+    },
+    {
+      "path": "data.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/data.py",
+      "sha256": "308da8deeca061fd7318c6d1d1ed3938f12a951cbbfffd3d6714ab61c03704f4"
+    },
+    {
+      "path": "github_sync.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/github_sync.py",
+      "sha256": "db4a8a86ee00e32d5fe6e412285818e16228bac7304703e259b277835d637c05"
+    },
+    {
+      "path": "mollie-icon.png",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/mollie-icon.png",
+      "sha256": "28990027fd79e03e2ef8416e8c1d3410ee284ec86383280968b245f08576e768"
+    },
+    {
+      "path": "reporting.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/reporting.py",
+      "sha256": "4ea71c8f69ab9cf22d7da96a160c6587734b0e6939f5b8f33b1760c1faca5972"
+    },
+    {
+      "path": "shared_cache.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/shared_cache.py",
+      "sha256": "86e16770fdea09e684c882870f730a794e2d64a807c3f06195dcd3254dedbde5"
+    },
+    {
+      "path": "subdivisioncanvas.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/subdivisioncanvas.py",
+      "sha256": "d76123adcee302159e2316fdeedadb3b3dfee5c0ea6482a0000b4067017a5340"
+    },
+    {
+      "path": "suite_draw.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/suite_draw.py",
+      "sha256": "6d30a910c07092af7ab76667694aff453263f13ec0d873cf6c681b6445f15a5f"
+    },
+    {
+      "path": "updater.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/updater.py",
+      "sha256": "f004bc7b51254c04014f0489db3447b6ddb67c94e89aefab77e84ed8e6e09cbc"
+    },
+    {
+      "path": "vocab.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/vocab.py",
+      "sha256": "1f44614c8b5d93db102c60032754c42559bd064b0677cc8e71d30e49349c2c05"
+    },
+    {
+      "path": "zonedata.py",
+      "url": "https://raw.githubusercontent.com/kingmarkarnold-code/adamsville-play/main/editors/building-editor/zonedata.py",
+      "sha256": "45914b2b9b7fcd1970edcf5f690eac28227f47d57ae9ea3cbf9a29f61b08339b"
+    }
+  ],
+  "selfupdate": {
+    "payload_root": "editors/building-editor",
+    "payload_sha256": "fdee06206778d3f44f299d2394125d237a9f9f7d9062435e320f504c22c90fa7",
+    "files": [
+      {
+        "path": "about.py",
+        "sha256": "cacfcf7cb7f0c020efca9d6ea1227e7a03e994275edcd49f1fdef0ff5f036461"
+      },
+      {
+        "path": "app.py",
+        "sha256": "397e958bc192ccdf0d7221e78da0b1d387fbea49993cf197856a9526da8c82a2"
+      },
+      {
+        "path": "buildingcanvas.py",
+        "sha256": "63ff24720818a7ff990651d539641cb893a132775af56ac6fcfacf666d0a4add"
+      },
+      {
+        "path": "data.py",
+        "sha256": "308da8deeca061fd7318c6d1d1ed3938f12a951cbbfffd3d6714ab61c03704f4"
+      },
+      {
+        "path": "github_sync.py",
+        "sha256": "db4a8a86ee00e32d5fe6e412285818e16228bac7304703e259b277835d637c05"
+      },
+      {
+        "path": "mollie-icon.png",
+        "sha256": "28990027fd79e03e2ef8416e8c1d3410ee284ec86383280968b245f08576e768"
+      },
+      {
+        "path": "reporting.py",
+        "sha256": "4ea71c8f69ab9cf22d7da96a160c6587734b0e6939f5b8f33b1760c1faca5972"
+      },
+      {
+        "path": "shared_cache.py",
+        "sha256": "86e16770fdea09e684c882870f730a794e2d64a807c3f06195dcd3254dedbde5"
+      },
+      {
+        "path": "subdivisioncanvas.py",
+        "sha256": "d76123adcee302159e2316fdeedadb3b3dfee5c0ea6482a0000b4067017a5340"
+      },
+      {
+        "path": "suite_draw.py",
+        "sha256": "6d30a910c07092af7ab76667694aff453263f13ec0d873cf6c681b6445f15a5f"
+      },
+      {
+        "path": "updater.py",
+        "sha256": "f004bc7b51254c04014f0489db3447b6ddb67c94e89aefab77e84ed8e6e09cbc"
+      },
+      {
+        "path": "vocab.py",
+        "sha256": "1f44614c8b5d93db102c60032754c42559bd064b0677cc8e71d30e49349c2c05"
+      },
+      {
+        "path": "zonedata.py",
+        "sha256": "45914b2b9b7fcd1970edcf5f690eac28227f47d57ae9ea3cbf9a29f61b08339b"
+      }
+    ]
+  }
+}
